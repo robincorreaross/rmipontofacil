@@ -11,6 +11,7 @@ import Dashboard from "./pages/admin/Dashboard";
 import Employees from "./pages/admin/Employees";
 import Records from "./pages/admin/Records";
 import QRCodePage from "./pages/admin/QRCode";
+import Settings from "./pages/admin/Settings"; // Importando a nova página
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -60,6 +61,8 @@ const App = () => (
             <Route path="/admin/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
             <Route path="/admin/records" element={<ProtectedRoute><Records /></ProtectedRoute>} />
             <Route path="/admin/qrcode" element={<ProtectedRoute><QRCodePage /></ProtectedRoute>} />
+            {/* Nova rota para configurações da empresa */}
+            <Route path="/admin/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>

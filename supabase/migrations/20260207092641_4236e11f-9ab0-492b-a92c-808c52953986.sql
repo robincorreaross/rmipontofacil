@@ -73,3 +73,23 @@ CREATE TRIGGER update_time_records_updated_at
 -- Indexes
 CREATE INDEX idx_employees_cpf ON public.employees(cpf);
 CREATE INDEX idx_time_records_employee_date ON public.time_records(employee_id, recorded_at);
+
+-- Criar tabela para dados da empresa
+CREATE TABLE IF NOT EXISTS company_settings (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  nome_fantasia TEXT NOT NULL,
+  razao_social TEXT NOT NULL,
+  cnpj TEXT NOT NULL,
+  endereco TEXT,
+  telefone TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Habilitar RLS
+ALTER TABLE company_settings ENABLE ROW LEVEL SECURITY;
+
+-- Política para que apenas admins logados possam ver e editar
+CREATE POLICY "Admins can manage company settings" 
+ON company_settings FOR ALL 
+TO authenticated 
+USING (true);

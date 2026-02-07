@@ -2,7 +2,7 @@ import { ReactNode } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
-import { Fingerprint, Users, ClipboardList, BarChart3, LogOut, QrCode } from 'lucide-react';
+import { Fingerprint, Users, ClipboardList, BarChart3, LogOut, QrCode, Settings } from 'lucide-react';
 
 interface AdminLayoutProps {
   children: ReactNode;
@@ -13,6 +13,7 @@ const navItems = [
   { href: '/admin/employees', label: 'Funcionários', icon: Users },
   { href: '/admin/records', label: 'Registros', icon: ClipboardList },
   { href: '/admin/qrcode', label: 'QR Code', icon: QrCode },
+  { href: '/admin/settings', label: 'Configurações', icon: Settings }, // Novo link adicionado aqui
 ];
 
 export function AdminLayout({ children }: AdminLayoutProps) {

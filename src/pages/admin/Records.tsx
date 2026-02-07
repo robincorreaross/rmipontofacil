@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { AdminLayout } from '@/components/admin/AdminLayout';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,10 +20,11 @@ import {
 } from '@/components/ui/select';
 import { supabase } from '@/integrations/supabase/client';
 import { getRecordTypeLabel, getRecordTypeColor, formatCPF } from '@/lib/cpf';
+import { exportEmployeeMonthlyReport } from '@/lib/exportPdf';
 import { useAuth } from '@/hooks/useAuth';
-import { Pencil, Trash2, Filter, Plus, AlertCircle } from 'lucide-react';
+import { Pencil, Trash2, Filter, Plus, AlertCircle, FileDown } from 'lucide-react';
 import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { format, startOfMonth, endOfMonth, parseISO } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
 interface TimeRecord {
@@ -33,13 +34,14 @@ interface TimeRecord {
   recorded_at: string;
   notes: string | null;
   edited: boolean;
-  employees: { name: string; cpf: string } | null;
+  employees: { name: string; cpf: string; position?: string } | null;
 }
 
 interface Employee {
   id: string;
   name: string;
   cpf: string;
+  position?: string;
 }
 
 const Records = () => {
@@ -60,44 +62,72 @@ const Records = () => {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    fetchEmployees();
+  const fetchEmployees = useCallback(async () => {
+    const { data } = await supabase
+      .from('employees')
+      .select('id, name, cpf, position')
+      .eq('active', true)
+      .order('name');
+    setEmployees(data || []);
   }, []);
 
-  useEffect(() => {
-    fetchRecords();
-  }, [filterDate, filterEmployee]);
-
-  const fetchEmployees = async () => {
-    const { data } = await supabase.from('employees').select('id, name, cpf').eq('active', true).order('name');
-    setEmployees(data || []);
-  };
-
-  const fetchRecords = async () => {
+  const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
-      const startOfDay = `${filterDate}T00:00:00`;
-      const endOfDay = `${filterDate}T23:59:59`;
-
-      let query = supabase
-        .from('time_records')
-        .select('*, employees(name, cpf)')
-        .gte('recorded_at', startOfDay)
-        .lte('recorded_at', endOfDay)
-        .order('recorded_at', { ascending: true });
+      const dateRef = parseISO(filterDate);
+      let startRange: string;
+      let endRange: string;
 
       if (filterEmployee !== 'all') {
-        query = query.eq('employee_id', filterEmployee);
+        startRange = format(startOfMonth(dateRef), "yyyy-MM-dd'T'00:00:00");
+        endRange = format(endOfMonth(dateRef), "yyyy-MM-dd'T'23:59:59");
+      } else {
+        startRange = `${filterDate}T00:00:00`;
+        endRange = `${filterDate}T23:59:59`;
       }
 
-      const { data, error } = await query;
+      const { data, error } = await supabase
+        .from('time_records')
+        .select('*, employees(name, cpf, position)')
+        .gte('recorded_at', startRange)
+        .lte('recorded_at', endRange)
+        .order('recorded_at', { ascending: true });
+
       if (error) throw error;
-      setRecords(data || []);
+
+      let filtered = data || [];
+      if (filterEmployee !== 'all') {
+        filtered = filtered.filter(r => r.employee_id === filterEmployee);
+      }
+      
+      setRecords(filtered);
     } catch (err) {
       toast.error('Erro ao carregar registros.');
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  }, [filterDate, filterEmployee]);
+
+  useEffect(() => {
+    fetchEmployees();
+  }, [fetchEmployees]);
+
+  useEffect(() => {
+    fetchRecords();
+  }, [fetchRecords]);
+
+  const handleExport = async () => {
+    const emp = employees.find(e => e.id === filterEmployee);
+    if (emp && records.length > 0) {
+      const employeeData = {
+        name: emp.name,
+        cpf: emp.cpf,
+        position: emp.position
+      };
+      await exportEmployeeMonthlyReport(employeeData, records, filterDate);
+    } else {
+      toast.error('Selecione um funcionário com registros para exportar.');
     }
   };
 
@@ -113,7 +143,7 @@ const Records = () => {
   };
 
   const openAddDialog = () => {
-    setFormEmployee('');
+    setFormEmployee(filterEmployee !== 'all' ? filterEmployee : '');
     setFormType('entrada');
     setFormDate(filterDate);
     setFormTime(format(new Date(), 'HH:mm'));
@@ -149,7 +179,6 @@ const Records = () => {
       fetchRecords();
     } catch (err) {
       toast.error('Erro ao atualizar registro.');
-      console.error(err);
     } finally {
       setSaving(false);
     }
@@ -185,7 +214,6 @@ const Records = () => {
       fetchRecords();
     } catch (err) {
       toast.error('Erro ao adicionar registro.');
-      console.error(err);
     } finally {
       setSaving(false);
     }
@@ -200,7 +228,6 @@ const Records = () => {
       fetchRecords();
     } catch (err) {
       toast.error('Erro ao excluir registro.');
-      console.error(err);
     }
   };
 
@@ -210,29 +237,26 @@ const Records = () => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-display font-bold text-foreground">Registros de Ponto</h1>
-            <p className="text-muted-foreground text-sm">{records.length} registros encontrados</p>
+            <p className="text-muted-foreground text-sm">
+              {filterEmployee !== 'all' ? 'Registros Mensais' : 'Registros Diários'}: {records.length} encontrados
+            </p>
           </div>
-          <Button onClick={openAddDialog} className="gradient-primary border-0 text-primary-foreground font-display">
-            <Plus className="w-4 h-4 mr-2" />
-            Adicionar Registro
-          </Button>
+          <div className="flex gap-2">
+            {filterEmployee !== 'all' && records.length > 0 && (
+              <Button variant="outline" onClick={handleExport} className="border-primary text-primary">
+                <FileDown className="w-4 h-4 mr-2" /> Exportar Folha
+              </Button>
+            )}
+            <Button onClick={openAddDialog} className="gradient-primary text-white">
+              <Plus className="w-4 h-4 mr-2" /> Adicionar Registro
+            </Button>
+          </div>
         </div>
 
-        {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-muted-foreground" />
-            <Input
-              type="date"
-              value={filterDate}
-              onChange={(e) => setFilterDate(e.target.value)}
-              className="w-auto bg-card"
-            />
-          </div>
+          <Input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-auto" />
           <Select value={filterEmployee} onValueChange={setFilterEmployee}>
-            <SelectTrigger className="w-[200px] bg-card">
-              <SelectValue placeholder="Todos os funcionários" />
-            </SelectTrigger>
+            <SelectTrigger className="w-[200px]"><SelectValue placeholder="Funcionário" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os funcionários</SelectItem>
               {employees.map((emp) => (
@@ -242,51 +266,25 @@ const Records = () => {
           </Select>
         </div>
 
-        {/* Records */}
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground">Carregando...</div>
-        ) : records.length === 0 ? (
-          <Card className="glass-card">
-            <CardContent className="py-12 text-center text-muted-foreground">
-              Nenhum registro encontrado para esta data.
-            </CardContent>
-          </Card>
+          <div className="text-center py-12">Carregando...</div>
         ) : (
           <div className="grid gap-2">
             {records.map((record) => (
               <Card key={record.id} className="glass-card">
                 <CardContent className="p-4 flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                      <span className="font-display font-semibold text-foreground">
-                        {record.employees?.name || 'Desconhecido'}
-                      </span>
-                      <Badge className={`text-xs ${getRecordTypeColor(record.record_type)}`}>
-                        {getRecordTypeLabel(record.record_type)}
-                      </Badge>
-                      {record.edited && (
-                        <Badge variant="outline" className="text-xs">editado</Badge>
-                      )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">{record.employees?.name}</span>
+                      <Badge className={getRecordTypeColor(record.record_type)}>{getRecordTypeLabel(record.record_type)}</Badge>
                     </div>
                     <div className="text-sm text-muted-foreground">
-                      <span className="tabular-nums font-medium">
-                        {format(new Date(record.recorded_at), 'HH:mm:ss', { locale: ptBR })}
-                      </span>
-                      {record.employees?.cpf && (
-                        <span className="ml-2">• CPF: {formatCPF(record.employees.cpf)}</span>
-                      )}
-                      {record.notes && (
-                        <span className="ml-2">• {record.notes}</span>
-                      )}
+                      {format(new Date(record.recorded_at), 'HH:mm:ss')} {record.notes && `• ${record.notes}`}
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 ml-2">
-                    <Button variant="ghost" size="sm" onClick={() => openEditDialog(record)}>
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(record)} className="text-destructive">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => openEditDialog(record)}><Pencil className="w-3.5 h-3.5" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => handleDelete(record)} className="text-destructive"><Trash2 className="w-3.5 h-3.5" /></Button>
                   </div>
                 </CardContent>
               </Card>
@@ -294,119 +292,63 @@ const Records = () => {
           </div>
         )}
 
-        {/* Edit Dialog */}
-        <Dialog open={editDialog} onOpenChange={setEditDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="font-display">Editar Registro</DialogTitle>
-            </DialogHeader>
+        {/* DIÁLOGO ADICIONAR */}
+        <Dialog open={addDialog} onOpenChange={setAddDialog}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Adicionar Registro</DialogTitle></DialogHeader>
             <div className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label>Tipo de registro</Label>
-                <Select value={formType} onValueChange={setFormType}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="entrada">Entrada</SelectItem>
-                    <SelectItem value="intervalo">Intervalo</SelectItem>
-                    <SelectItem value="fim_intervalo">Fim do Intervalo</SelectItem>
-                    <SelectItem value="saida">Saída</SelectItem>
-                  </SelectContent>
-                </Select>
+              <Label>Funcionário</Label>
+              <Select value={formEmployee} onValueChange={setFormEmployee}>
+                <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                <SelectContent>
+                  {employees.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Label>Tipo</Label>
+              <Select value={formType} onValueChange={setFormType}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="entrada">Entrada</SelectItem>
+                  <SelectItem value="intervalo">Intervalo</SelectItem>
+                  <SelectItem value="fim_intervalo">Fim Intervalo</SelectItem>
+                  <SelectItem value="saida">Saída</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label>Data</Label><Input type="date" value={formDate} onChange={e => setFormDate(e.target.value)} /></div>
+                <div><Label>Hora</Label><Input type="time" value={formTime} onChange={e => setFormTime(e.target.value)} /></div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label>Data</Label>
-                  <Input type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Horário</Label>
-                  <Input type="time" value={formTime} onChange={(e) => setFormTime(e.target.value)} />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Observação (opcional)</Label>
-                <Input
-                  placeholder="Motivo da edição"
-                  value={formNotes}
-                  onChange={(e) => setFormNotes(e.target.value)}
-                />
-              </div>
-              {formError && (
-                <div className="flex items-center gap-2 text-destructive text-sm">
-                  <AlertCircle className="w-4 h-4" />
-                  <span>{formError}</span>
-                </div>
-              )}
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setEditDialog(false)}>Cancelar</Button>
-                <Button onClick={handleSaveEdit} disabled={saving} className="gradient-primary border-0 text-primary-foreground">
-                  {saving ? 'Salvando...' : 'Salvar'}
-                </Button>
-              </div>
+              <Label>Observação</Label>
+              <Input value={formNotes} onChange={e => setFormNotes(e.target.value)} />
+              {formError && <p className="text-destructive text-sm">{formError}</p>}
+              <Button onClick={handleAddRecord} disabled={saving} className="w-full">{saving ? 'Salvando...' : 'Salvar'}</Button>
             </div>
           </DialogContent>
         </Dialog>
 
-        {/* Add Dialog */}
-        <Dialog open={addDialog} onOpenChange={setAddDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="font-display">Adicionar Registro</DialogTitle>
-            </DialogHeader>
+        {/* DIÁLOGO EDITAR */}
+        <Dialog open={editDialog} onOpenChange={setEditDialog}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Editar Registro</DialogTitle></DialogHeader>
             <div className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label>Funcionário</Label>
-                <Select value={formEmployee} onValueChange={setFormEmployee}>
-                  <SelectTrigger><SelectValue placeholder="Selecione um funcionário" /></SelectTrigger>
-                  <SelectContent>
-                    {employees.map((emp) => (
-                      <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <Label>Tipo</Label>
+              <Select value={formType} onValueChange={setFormType}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="entrada">Entrada</SelectItem>
+                  <SelectItem value="intervalo">Intervalo</SelectItem>
+                  <SelectItem value="fim_intervalo">Fim Intervalo</SelectItem>
+                  <SelectItem value="saida">Saída</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label>Data</Label><Input type="date" value={formDate} onChange={e => setFormDate(e.target.value)} /></div>
+                <div><Label>Hora</Label><Input type="time" value={formTime} onChange={e => setFormTime(e.target.value)} /></div>
               </div>
-              <div className="space-y-2">
-                <Label>Tipo de registro</Label>
-                <Select value={formType} onValueChange={setFormType}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="entrada">Entrada</SelectItem>
-                    <SelectItem value="intervalo">Intervalo</SelectItem>
-                    <SelectItem value="fim_intervalo">Fim do Intervalo</SelectItem>
-                    <SelectItem value="saida">Saída</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label>Data</Label>
-                  <Input type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Horário</Label>
-                  <Input type="time" value={formTime} onChange={(e) => setFormTime(e.target.value)} />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Observação (opcional)</Label>
-                <Input
-                  placeholder="Motivo do registro manual"
-                  value={formNotes}
-                  onChange={(e) => setFormNotes(e.target.value)}
-                />
-              </div>
-              {formError && (
-                <div className="flex items-center gap-2 text-destructive text-sm">
-                  <AlertCircle className="w-4 h-4" />
-                  <span>{formError}</span>
-                </div>
-              )}
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setAddDialog(false)}>Cancelar</Button>
-                <Button onClick={handleAddRecord} disabled={saving} className="gradient-primary border-0 text-primary-foreground">
-                  {saving ? 'Salvando...' : 'Adicionar'}
-                </Button>
-              </div>
+              <Label>Observação</Label>
+              <Input value={formNotes} onChange={e => setFormNotes(e.target.value)} />
+              {formError && <p className="text-destructive text-sm">{formError}</p>}
+              <Button onClick={handleSaveEdit} disabled={saving} className="w-full">{saving ? 'Salvando...' : 'Atualizar'}</Button>
             </div>
           </DialogContent>
         </Dialog>

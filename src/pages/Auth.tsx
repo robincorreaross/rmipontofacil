@@ -5,22 +5,21 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Fingerprint, Mail, Lock, AlertCircle, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
 import { z } from 'zod';
 
+// Mantemos o schema apenas para validação de entrada
 const loginSchema = z.object({
   email: z.string().trim().email('Email inválido').max(255),
   password: z.string().min(6, 'A senha deve ter pelo menos 6 caracteres').max(128),
 });
 
 const Auth = () => {
-  const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const { signIn, signUp } = useAuth();
+  const { signIn } = useAuth(); // Removido o signUp daqui
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,30 +33,17 @@ const Auth = () => {
 
     setLoading(true);
     try {
-      if (isLogin) {
-        const { error } = await signIn(email, password);
-        if (error) {
-          if (error.message.includes('Invalid login')) {
-            setError('Email ou senha incorretos.');
-          } else {
-            setError(error.message);
-          }
-          return;
+      // Agora a lógica é direta para Login
+      const { error } = await signIn(email, password);
+      if (error) {
+        if (error.message.includes('Invalid login')) {
+          setError('Email ou senha incorretos.');
+        } else {
+          setError(error.message);
         }
-        navigate('/admin');
-      } else {
-        const { error } = await signUp(email, password);
-        if (error) {
-          if (error.message.includes('already registered')) {
-            setError('Este email já está cadastrado. Faça login.');
-          } else {
-            setError(error.message);
-          }
-          return;
-        }
-        toast.success('Conta criada! Verifique seu email para confirmar o cadastro.');
-        setIsLogin(true);
+        return;
       }
+      navigate('/admin');
     } finally {
       setLoading(false);
     }
@@ -75,10 +61,10 @@ const Auth = () => {
               <h1 className="text-xl font-display font-bold text-foreground">PontoFácil</h1>
             </div>
             <h2 className="text-lg font-display font-semibold text-foreground">
-              {isLogin ? 'Acesso Administrativo' : 'Criar Conta'}
+              Acesso Administrativo
             </h2>
             <p className="text-muted-foreground text-sm">
-              {isLogin ? 'Entre com suas credenciais' : 'Registre-se para gerenciar'}
+              Entre com suas credenciais
             </p>
           </div>
 
@@ -122,23 +108,13 @@ const Auth = () => {
             >
               {loading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
-              ) : isLogin ? (
-                'Entrar'
               ) : (
-                'Criar Conta'
+                'Entrar'
               )}
             </Button>
           </form>
 
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={() => { setIsLogin(!isLogin); setError(''); }}
-              className="text-sm text-primary hover:underline"
-            >
-              {isLogin ? 'Não tem conta? Registre-se' : 'Já tem conta? Faça login'}
-            </button>
-          </div>
+          {/* O botão de alternar para "Registre-se" foi removido por segurança */}
         </CardContent>
       </Card>
     </div>
