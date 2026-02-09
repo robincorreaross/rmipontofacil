@@ -1,9 +1,9 @@
 import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+import autoTable, { RowInput } from "jspdf-autotable";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { supabase } from "@/integrations/supabase/client";
-import { getRecordTypeLabel, formatCPF } from "./cpf";
+import { formatCPF } from "./cpf";
 
 interface Employee {
   name: string;
@@ -14,6 +14,7 @@ interface Employee {
 interface TimeRecord {
   recorded_at: string;
   record_type: string;
+  employee_id?: string;
 }
 
 interface CompanySettings {
@@ -22,11 +23,6 @@ interface CompanySettings {
   cnpj: string;
   endereco: string;
   telefone: string;
-}
-
-interface SupabaseError {
-  code: string;
-  message: string;
 }
 
 interface DayGroup {
@@ -43,26 +39,27 @@ interface jsPDFWithAutoTable extends jsPDF {
   };
 }
 
-type DynamicSupabase = {
-  from: (table: string) => {
-    select: (columns: string) => {
-      single: () => Promise<{
-        data: CompanySettings | null;
-        error: SupabaseError | null;
-      }>;
-    };
-  };
+// Funções Auxiliares
+const calculateDiff = (start: string, end: string): number => {
+  if (start === "-" || end === "-") return 0;
+  const [h1, m1] = start.split(":").map(Number);
+  const [h2, m2] = end.split(":").map(Number);
+  const diff = h2 * 60 + m2 - (h1 * 60 + m1);
+  return diff > 0 ? diff : 0;
 };
 
-// ... (mantenha as interfaces anteriores: Employee, TimeRecord, etc.)
+const formatMinutes = (totalMinutes: number): string => {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+};
 
 export const exportEmployeeMonthlyReport = async (
-  employees: Employee[], // Agora aceita um array
+  employees: Employee[],
   allRecords: TimeRecord[],
   dateFilter: string,
 ) => {
-  const dynamicDb = supabase as unknown as DynamicSupabase;
-  const { data: company } = await dynamicDb
+  const { data: company } = await (supabase as any)
     .from("company_settings")
     .select("*")
     .single();
@@ -71,50 +68,61 @@ export const exportEmployeeMonthlyReport = async (
   const selectedDate = parseISO(dateFilter);
   const monthLabel = format(selectedDate, "MMMM / yyyy", { locale: ptBR });
 
-  // Iterar sobre cada funcionário para criar uma página por pessoa
   employees.forEach((employee, index) => {
-    if (index > 0) doc.addPage(); // Adiciona nova página se não for o primeiro
+    if (index > 0) doc.addPage();
 
-    // Filtrar registros específicos deste funcionário
-    // Nota: assumindo que o campo employee_id existe no TimeRecord vindo do banco
     const employeeRecords = (allRecords as any[]).filter(
-      (r) => r.employee_id === (employee as any).id || employees.length === 1,
+      (r) =>
+        (r as any).employee_id === (employee as any).id ||
+        employees.length === 1,
     );
 
-    // --- Cabeçalho (igual ao anterior) ---
-    doc.setFontSize(16);
-    doc.setFont("helvetica", "bold");
-    doc.text(company?.nome_fantasia?.toUpperCase() || "PONTO FÁCIL", 148, 15, {
+    // --- CABEÇALHO DA EMPRESA ---
+    doc.setFontSize(18).setFont("helvetica", "bold");
+    doc.text(company?.nome_fantasia?.toUpperCase() || "PONTO FÁCIL", 148, 12, {
       align: "center",
     });
 
-    doc.setFontSize(9);
+    doc.setFontSize(9).setFont("helvetica", "normal");
+    const infoEmpresa = `${company?.razao_social || ""} - CNPJ: ${company?.cnpj || ""}`;
+    doc.text(infoEmpresa, 148, 17, { align: "center" });
+
+    // Inclusão do Endereço e Telefone
+    if (company?.endereco) {
+      doc.text(company.endereco, 148, 21, { align: "center" });
+    }
+    if (company?.telefone) {
+      doc.text(`Telefone: ${company.telefone}`, 148, 25, { align: "center" });
+    }
+
+    doc.setFontSize(12).setFont("helvetica", "bold");
+    doc.text("FOLHA DE FREQUÊNCIA INDIVIDUAL", 148, 33, { align: "center" });
+
+    // --- INFO FUNCIONÁRIO (EMPILHADO À ESQUERDA) ---
+    doc.setDrawColor(200).line(14, 36, 283, 36);
+
+    doc.setFontSize(10).setFont("helvetica", "bold");
+    doc.text("FUNCIONÁRIO:", 14, 42);
     doc.setFont("helvetica", "normal");
-    doc.text(
-      `${company?.razao_social || ""} - CNPJ: ${company?.cnpj || ""}`,
-      148,
-      20,
-      { align: "center" },
-    );
+    doc.text(employee.name.toUpperCase(), 45, 42);
 
-    doc.setFontSize(12);
     doc.setFont("helvetica", "bold");
-    doc.text("FOLHA DE FREQUÊNCIA INDIVIDUAL", 148, 32, { align: "center" });
+    doc.text("CARGO:", 14, 48);
+    doc.setFont("helvetica", "normal");
+    doc.text(employee.position?.toUpperCase() || "NÃO INFORMADO", 45, 48);
 
-    // --- Info Funcionário ---
-    doc.setDrawColor(200);
-    doc.line(14, 35, 283, 35);
-    doc.setFontSize(10);
-    doc.text(`FUNCIONÁRIO: ${employee.name.toUpperCase()}`, 14, 42);
-    doc.text(
-      `CARGO: ${employee.position?.toUpperCase() || "NÃO INFORMADO"}`,
-      14,
-      48,
-    );
-    doc.text(`CPF: ${formatCPF(employee.cpf)}`, 120, 48);
-    doc.text(`MÊS REFERÊNCIA: ${monthLabel.toUpperCase()}`, 220, 42);
+    doc.setFont("helvetica", "bold");
+    doc.text("CPF:", 14, 54); // CPF agora abaixo do Cargo
+    doc.setFont("helvetica", "normal");
+    doc.text(formatCPF(employee.cpf), 45, 54);
 
-    // --- Lógica de Agrupamento ---
+    // Mês de Referência (Alinhado à direita)
+    doc.setFont("helvetica", "bold");
+    doc.text("MÊS REFERÊNCIA:", 210, 42);
+    doc.setFont("helvetica", "normal");
+    doc.text(monthLabel.toUpperCase(), 245, 42);
+
+    // --- Processamento dos Dados ---
     const groupedRecords: Record<string, DayGroup> = {};
     employeeRecords.forEach((rec) => {
       const dateKey = format(new Date(rec.recorded_at), "yyyy-MM-dd");
@@ -135,38 +143,77 @@ export const exportEmployeeMonthlyReport = async (
       if (rec.record_type === "saida") groupedRecords[dateKey].out = time;
     });
 
-    const tableBody = Object.values(groupedRecords).map((day) => [
-      format(parseISO(day.date), "dd/MM/yyyy"),
-      format(parseISO(day.date), "EEEE", { locale: ptBR }),
-      day.in,
-      day.pause,
-      day.resume,
-      day.out,
-      "",
+    let totalMonthMinutes = 0;
+
+    const tableBody: RowInput[] = Object.values(groupedRecords).map((day) => {
+      const morningMinutes = calculateDiff(day.in, day.pause);
+      const afternoonMinutes = calculateDiff(day.resume, day.out);
+      const dailyMinutes = morningMinutes + afternoonMinutes;
+      totalMonthMinutes += dailyMinutes;
+
+      return [
+        format(parseISO(day.date), "dd/MM/yyyy"),
+        format(parseISO(day.date), "EEEE", { locale: ptBR }),
+        day.in,
+        day.pause,
+        day.resume,
+        day.out,
+        dailyMinutes > 0 ? formatMinutes(dailyMinutes) : "-",
+      ];
+    });
+
+    tableBody.push([
+      {
+        content: "TOTAL TRABALHADO NO MÊS",
+        colSpan: 6,
+        styles: {
+          halign: "right",
+          fontStyle: "bold",
+          fillColor: [240, 240, 240],
+        },
+      },
+      {
+        content: formatMinutes(totalMonthMinutes),
+        styles: {
+          halign: "center",
+          fontStyle: "bold",
+          fillColor: [240, 240, 240],
+        },
+      },
     ]);
 
     autoTable(doc, {
-      startY: 55,
+      startY: 58, // Ajustado para dar espaço ao CPF
       head: [
         [
           "DATA",
           "DIA DA SEMANA",
           "ENTRADA",
-          "SAÍDA ALMOÇO",
-          "VOLTA ALMOÇO",
-          "SAÍDA FINAL",
-          "VISTO",
+          "INTERVALO",
+          "RETORNO",
+          "SAÍDA",
+          "TOTAL DIA",
         ],
       ],
       body: tableBody,
       theme: "grid",
       headStyles: { fillColor: [40, 40, 40], halign: "center" },
+      columnStyles: {
+        0: { halign: "center", cellWidth: 30 },
+        2: { halign: "center" },
+        3: { halign: "center" },
+        4: { halign: "center" },
+        5: { halign: "center" },
+        6: { halign: "center", fontStyle: "bold" },
+      },
       styles: { fontSize: 9 },
     });
 
     const finalY = (doc as any).lastAutoTable.finalY + 30;
     doc.line(98, finalY, 198, finalY);
-    doc.text("ASSINATURA DO FUNCIONÁRIO", 148, finalY + 5, { align: "center" });
+    doc
+      .setFont("helvetica", "bold")
+      .text("ASSINATURA DO FUNCIONÁRIO", 148, finalY + 5, { align: "center" });
   });
 
   const fileName =
