@@ -42,6 +42,7 @@ interface Employee {
   name: string;
   cpf: string;
   position?: string;
+  shift_type?: "tradicional" | "direto" | "reduzido" | null; // Adicione esta linha
 }
 
 const Records = () => {
@@ -74,7 +75,7 @@ const Records = () => {
   const fetchEmployees = useCallback(async () => {
     const { data } = await supabase
       .from("employees")
-      .select("id, name, cpf, position")
+      .select("*") // Alterado de campos específicos para '*' para garantir que pegue o turno
       .eq("active", true)
       .order("name");
     setEmployees(data || []);

@@ -93,3 +93,6 @@ CREATE POLICY "Admins can manage company settings"
 ON company_settings FOR ALL 
 TO authenticated 
 USING (true);
+
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift_type TEXT DEFAULT 'tradicional';
+-- Tipos: 'tradicional', 'direto', 'reduzido'

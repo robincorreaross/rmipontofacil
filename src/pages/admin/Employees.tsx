@@ -1,27 +1,42 @@
-import { useEffect, useState } from 'react';
-import { AdminLayout } from '@/components/admin/AdminLayout';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
+import { useEffect, useState } from "react";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { supabase } from '@/integrations/supabase/client';
-import { formatCPF, cleanCPF, validateCPF } from '@/lib/cpf';
-import { Plus, Pencil, Trash2, Search, UserPlus, AlertCircle } from 'lucide-react';
-import { toast } from 'sonner';
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"; // Adicionado import do Select
+import { supabase } from "@/integrations/supabase/client";
+import { formatCPF, cleanCPF, validateCPF } from "@/lib/cpf";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Search,
+  UserPlus,
+  AlertCircle,
+} from "lucide-react";
+import { toast } from "sonner";
 
 interface Employee {
   id: string;
   name: string;
   cpf: string;
   position: string | null;
+  shift_type: "tradicional" | "direto" | "reduzido" | null; // Alterado para aceitar null
   active: boolean;
   created_at: string;
 }
@@ -29,13 +44,16 @@ interface Employee {
 const Employees = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [formName, setFormName] = useState('');
-  const [formCpf, setFormCpf] = useState('');
-  const [formPosition, setFormPosition] = useState('');
-  const [formError, setFormError] = useState('');
+  const [formName, setFormName] = useState("");
+  const [formCpf, setFormCpf] = useState("");
+  const [formPosition, setFormPosition] = useState("");
+  const [formShiftType, setFormShiftType] = useState<
+    "tradicional" | "direto" | "reduzido"
+  >("tradicional"); // Estado do turno
+  const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -45,14 +63,28 @@ const Employees = () => {
   const fetchEmployees = async () => {
     try {
       const { data, error } = await supabase
-        .from('employees')
-        .select('*')
-        .order('name', { ascending: true });
+        .from("employees")
+        .select("*")
+        .order("name", { ascending: true });
 
       if (error) throw error;
-      setEmployees(data || []);
+
+      // Usamos "any" aqui apenas para o mapeamento inicial,
+      // transformando os dados brutos no nosso formato Employee
+      const sanitizedData = (data || []).map((emp: any) => ({
+        id: emp.id,
+        name: emp.name,
+        cpf: emp.cpf,
+        position: emp.position,
+        active: emp.active,
+        created_at: emp.created_at,
+        // Garante que se vier nulo do banco, vire "tradicional"
+        shift_type: emp.shift_type || "tradicional",
+      }));
+
+      setEmployees(sanitizedData as Employee[]);
     } catch (err) {
-      toast.error('Erro ao carregar funcionários.');
+      toast.error("Erro ao carregar funcionários.");
       console.error(err);
     } finally {
       setLoading(false);
@@ -64,57 +96,64 @@ const Employees = () => {
       setEditingEmployee(employee);
       setFormName(employee.name);
       setFormCpf(formatCPF(employee.cpf));
-      setFormPosition(employee.position || '');
+      setFormPosition(employee.position || "");
+      setFormShiftType(employee.shift_type || "tradicional");
     } else {
       setEditingEmployee(null);
-      setFormName('');
-      setFormCpf('');
-      setFormPosition('');
+      setFormName("");
+      setFormCpf("");
+      setFormPosition("");
+      setFormShiftType("tradicional");
     }
-    setFormError('');
+    setFormError("");
     setDialogOpen(true);
   };
 
   const handleSave = async () => {
     const cleaned = cleanCPF(formCpf);
     if (!formName.trim()) {
-      setFormError('Nome é obrigatório.');
+      setFormError("Nome é obrigatório.");
       return;
     }
     if (!validateCPF(cleaned)) {
-      setFormError('CPF inválido.');
+      setFormError("CPF inválido.");
       return;
     }
 
     setSaving(true);
-    setFormError('');
+    setFormError("");
 
     try {
+      const payload = {
+        name: formName.trim(),
+        cpf: cleaned,
+        position: formPosition.trim() || null,
+        shift_type: formShiftType, // Incluído no payload
+      };
+
       if (editingEmployee) {
         const { error } = await supabase
-          .from('employees')
-          .update({ name: formName.trim(), cpf: cleaned, position: formPosition.trim() || null })
-          .eq('id', editingEmployee.id);
+          .from("employees")
+          .update(payload)
+          .eq("id", editingEmployee.id);
         if (error) throw error;
-        toast.success('Funcionário atualizado!');
+        toast.success("Funcionário atualizado!");
       } else {
-        const { error } = await supabase
-          .from('employees')
-          .insert({ name: formName.trim(), cpf: cleaned, position: formPosition.trim() || null });
+        const { error } = await supabase.from("employees").insert(payload);
         if (error) {
-          if (error.message.includes('duplicate')) {
-            setFormError('Já existe um funcionário com este CPF.');
+          if (error.message.includes("duplicate")) {
+            setFormError("Já existe um funcionário com este CPF.");
             return;
           }
           throw error;
         }
-        toast.success('Funcionário cadastrado!');
+        toast.success("Funcionário cadastrado!");
       }
 
       setDialogOpen(false);
       fetchEmployees();
     } catch (err) {
-      toast.error('Erro ao salvar funcionário.');
+      toast.error("Erro ao salvar funcionário.");
       console.error(err);
     } finally {
       setSaving(false);
@@ -124,28 +163,38 @@ const Employees = () => {
   const handleToggleActive = async (employee: Employee) => {
     try {
       const { error } = await supabase
-        .from('employees')
+        .from("employees")
         .update({ active: !employee.active })
-        .eq('id', employee.id);
+        .eq("id", employee.id);
       if (error) throw error;
-      toast.success(employee.active ? 'Funcionário desativado.' : 'Funcionário reativado.');
+      toast.success(
+        employee.active ? "Funcionário desativado." : "Funcionário reativado.",
+      );
       fetchEmployees();
     } catch (err) {
-      toast.error('Erro ao atualizar status.');
+      toast.error("Erro ao atualizar status.");
       console.error(err);
     }
   };
 
   const handleDelete = async (employee: Employee) => {
-    if (!confirm(`Tem certeza que deseja excluir ${employee.name}? Esta ação não pode ser desfeita e todos os registros de ponto serão removidos.`)) return;
+    if (
+      !confirm(
+        `Tem certeza que deseja excluir ${employee.name}? Esta ação não pode ser desfeita.`,
+      )
+    )
+      return;
 
     try {
-      const { error } = await supabase.from('employees').delete().eq('id', employee.id);
+      const { error } = await supabase
+        .from("employees")
+        .delete()
+        .eq("id", employee.id);
       if (error) throw error;
-      toast.success('Funcionário excluído.');
+      toast.success("Funcionário excluído.");
       fetchEmployees();
     } catch (err) {
-      toast.error('Erro ao excluir funcionário.');
+      toast.error("Erro ao excluir funcionário.");
       console.error(err);
     }
   };
@@ -153,7 +202,7 @@ const Employees = () => {
   const filtered = employees.filter(
     (e) =>
       e.name.toLowerCase().includes(search.toLowerCase()) ||
-      e.cpf.includes(cleanCPF(search))
+      e.cpf.includes(cleanCPF(search)),
   );
 
   return (
@@ -161,13 +210,20 @@ const Employees = () => {
       <div className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-display font-bold text-foreground">Funcionários</h1>
-            <p className="text-muted-foreground text-sm">{employees.length} funcionários cadastrados</p>
+            <h1 className="text-2xl font-display font-bold text-foreground">
+              Funcionários
+            </h1>
+            <p className="text-muted-foreground text-sm">
+              {employees.length} funcionários cadastrados
+            </p>
           </div>
 
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button onClick={() => openDialog()} className="gradient-primary border-0 text-primary-foreground font-display">
+              <Button
+                onClick={() => openDialog()}
+                className="gradient-primary border-0 text-primary-foreground font-display"
+              >
                 <UserPlus className="w-4 h-4 mr-2" />
                 Novo Funcionário
               </Button>
@@ -175,7 +231,7 @@ const Employees = () => {
             <DialogContent className="sm:max-w-md">
               <DialogHeader>
                 <DialogTitle className="font-display">
-                  {editingEmployee ? 'Editar Funcionário' : 'Novo Funcionário'}
+                  {editingEmployee ? "Editar Funcionário" : "Novo Funcionário"}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-4 mt-4">
@@ -184,7 +240,10 @@ const Employees = () => {
                   <Input
                     placeholder="Nome do funcionário"
                     value={formName}
-                    onChange={(e) => { setFormName(e.target.value); setFormError(''); }}
+                    onChange={(e) => {
+                      setFormName(e.target.value);
+                      setFormError("");
+                    }}
                   />
                 </div>
                 <div className="space-y-2">
@@ -192,7 +251,10 @@ const Employees = () => {
                   <Input
                     placeholder="000.000.000-00"
                     value={formCpf}
-                    onChange={(e) => { setFormCpf(formatCPF(e.target.value)); setFormError(''); }}
+                    onChange={(e) => {
+                      setFormCpf(formatCPF(e.target.value));
+                      setFormError("");
+                    }}
                     maxLength={14}
                   />
                 </div>
@@ -204,6 +266,33 @@ const Employees = () => {
                     onChange={(e) => setFormPosition(e.target.value)}
                   />
                 </div>
+
+                {/* NOVO CAMPO: TIPO DE TURNO */}
+                <div className="space-y-2">
+                  <Label>Tipo de Turno</Label>
+                  <Select
+                    value={formShiftType}
+                    onValueChange={(v: "tradicional" | "direto" | "reduzido") =>
+                      setFormShiftType(v)
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Selecione o turno" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tradicional">
+                        Tradicional (Intervalo 1h+)
+                      </SelectItem>
+                      <SelectItem value="direto">
+                        Direto (6h sem intervalo)
+                      </SelectItem>
+                      <SelectItem value="reduzido">
+                        Intervalo Reduzido (Ajustado no PDF)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
                 {formError && (
                   <div className="flex items-center gap-2 text-destructive text-sm">
                     <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -211,9 +300,18 @@ const Employees = () => {
                   </div>
                 )}
                 <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
-                  <Button onClick={handleSave} disabled={saving} className="gradient-primary border-0 text-primary-foreground">
-                    {saving ? 'Salvando...' : 'Salvar'}
+                  <Button
+                    variant="outline"
+                    onClick={() => setDialogOpen(false)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="gradient-primary border-0 text-primary-foreground"
+                  >
+                    {saving ? "Salvando..." : "Salvar"}
                   </Button>
                 </div>
               </div>
@@ -234,11 +332,15 @@ const Employees = () => {
 
         {/* List */}
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground">Carregando...</div>
+          <div className="text-center py-12 text-muted-foreground">
+            Carregando...
+          </div>
         ) : filtered.length === 0 ? (
           <Card className="glass-card">
             <CardContent className="py-12 text-center text-muted-foreground">
-              {search ? 'Nenhum funcionário encontrado.' : 'Nenhum funcionário cadastrado. Clique em "Novo Funcionário" para começar.'}
+              {search
+                ? "Nenhum funcionário encontrado."
+                : "Nenhum funcionário cadastrado."}
             </CardContent>
           </Card>
         ) : (
@@ -251,17 +353,37 @@ const Employees = () => {
                       <span className="font-display font-semibold text-foreground truncate">
                         {employee.name}
                       </span>
-                      <Badge variant={employee.active ? 'default' : 'secondary'} className={employee.active ? 'bg-success/10 text-success border-0 text-xs' : 'text-xs'}>
-                        {employee.active ? 'Ativo' : 'Inativo'}
+                      <Badge
+                        variant={employee.active ? "default" : "secondary"}
+                        className={
+                          employee.active
+                            ? "bg-success/10 text-success border-0 text-xs"
+                            : "text-xs"
+                        }
+                      >
+                        {employee.active ? "Ativo" : "Inativo"}
+                      </Badge>
+                      {/* Badge do Tipo de Turno */}
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] uppercase"
+                      >
+                        {employee.shift_type}
                       </Badge>
                     </div>
                     <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                      <span className="tabular-nums">{formatCPF(employee.cpf)}</span>
+                      <span className="tabular-nums">
+                        {formatCPF(employee.cpf)}
+                      </span>
                       {employee.position && <span>• {employee.position}</span>}
                     </div>
                   </div>
                   <div className="flex items-center gap-1 ml-2">
-                    <Button variant="ghost" size="sm" onClick={() => openDialog(employee)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openDialog(employee)}
+                    >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
@@ -270,9 +392,14 @@ const Employees = () => {
                       onClick={() => handleToggleActive(employee)}
                       className="text-muted-foreground"
                     >
-                      {employee.active ? 'Desativar' : 'Ativar'}
+                      {employee.active ? "Desativar" : "Ativar"}
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(employee)} className="text-destructive">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDelete(employee)}
+                      className="text-destructive"
+                    >
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                   </div>
