@@ -1,6 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable, { RowInput } from "jspdf-autotable";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, startOfMonth, endOfMonth } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { supabase } from "@/integrations/supabase/client";
 import { formatCPF } from "./cpf";
@@ -59,23 +59,42 @@ export const exportEmployeeMonthlyReport = async (
   allRecords: TimeRecord[],
   dateFilter: string,
 ) => {
+  // 1. Buscar configurações da empresa
   const { data: company } = await (supabase as any)
     .from("company_settings")
     .select("*")
     .single();
 
-  const doc = new jsPDF("l", "mm", "a4") as jsPDFWithAutoTable;
+  // 2. Buscar Justificativas para o mês selecionado
   const selectedDate = parseISO(dateFilter);
+  const startRange = format(startOfMonth(selectedDate), "yyyy-MM-dd");
+  const endRange = format(endOfMonth(selectedDate), "yyyy-MM-dd");
+
+  const { data: justifications } = await (supabase as any)
+    .from("justifications")
+    .select("*")
+    .gte("date", startRange)
+    .lte("date", endRange);
+
+  const doc = new jsPDF("l", "mm", "a4") as jsPDFWithAutoTable;
   const monthLabel = format(selectedDate, "MMMM / yyyy", { locale: ptBR });
 
   employees.forEach((employee, index) => {
     if (index > 0) doc.addPage();
 
+    // Filtra registros deste funcionário
     const employeeRecords = allRecords.filter(
       (r) => r.employee_id === employee.id,
     );
 
+    // Filtra justificativas deste funcionário
+    const employeeJustifications = (justifications || []).filter(
+      (j: any) => j.employee_id === employee.id,
+    );
+
     const groupedRecords: Record<string, DayGroup> = {};
+
+    // A. Preenche com os dias que têm batidas
     employeeRecords.forEach((rec) => {
       const dateKey = format(new Date(rec.recorded_at), "yyyy-MM-dd");
       if (!groupedRecords[dateKey]) {
@@ -95,13 +114,59 @@ export const exportEmployeeMonthlyReport = async (
       if (rec.record_type === "saida") groupedRecords[dateKey].out = time;
     });
 
+    // B. Preenche com os dias que têm justificativa (se não houver batida naquele dia)
+    employeeJustifications.forEach((just: any) => {
+      if (!groupedRecords[just.date]) {
+        groupedRecords[just.date] = {
+          date: just.date,
+          in: "-",
+          pause: "-",
+          resume: "-",
+          out: "-",
+        };
+      }
+    });
+
     let totalMonthMinutes = 0;
 
-    // ... (mantenha as funções timeToMinutes e minutesToTime como estão)
+    // Ordena os dias cronologicamente para o PDF
+    const sortedDays = Object.values(groupedRecords).sort((a, b) =>
+      a.date.localeCompare(b.date),
+    );
 
-    // ... (mantenha os imports e interfaces como estão)
+    const tableBody: RowInput[] = sortedDays.map((day) => {
+      // Verifica se há justificativa para este dia
+      const justification = employeeJustifications.find(
+        (j: any) => j.date === day.date,
+      );
 
-    const tableBody: RowInput[] = Object.values(groupedRecords).map((day) => {
+      // --- BLOCO NOVO: Exibição da Justificativa ---
+      // Se tem justificativa e o campo de Entrada está vazio (Falta integral)
+      if (justification && day.in === "-") {
+        const status = justification.is_excused ? "ABONADA" : "NÃO ABONADA";
+        // Verde (RGB) se abonada, Vermelho se não
+        // Adicionamos a tipagem explícita : [number, number, number]
+        const textColor: [number, number, number] = justification.is_excused
+          ? [22, 163, 74] // Verde
+          : [220, 38, 38]; // Vermelho
+
+        return [
+          format(parseISO(day.date), "dd/MM/yyyy"),
+          format(parseISO(day.date), "EEEE", { locale: ptBR }),
+          {
+            content: `FALTA ${status}: ${justification.reason.toUpperCase()}`,
+            colSpan: 4,
+            styles: {
+              halign: "center",
+              fontStyle: "bold",
+              textColor: textColor,
+            },
+          },
+          "-",
+        ];
+      }
+      // ---------------------------------------------
+
       // 1. DADOS ORIGINAIS EM MINUTOS
       const tIn = timeToMinutes(day.in);
       const tPause = timeToMinutes(day.pause);
@@ -125,8 +190,7 @@ export const exportEmployeeMonthlyReport = async (
           dispResume = minutesToTime(tPause + 60);
 
           // REGRA: A Saída no PDF é a Saída REAL + o intervalo que ela tirou + o GAP
-          // Para o seu exemplo (Saída 15:00):
-          // 15:00 + 20min (intervalo tirado) + 40min (gap para fechar 1h) = 16:00
+          // Mantendo sua lógica original exata:
           dispOut = minutesToTime(tOut + intervaloReal + gap);
         }
       } else if (employee.shift_type === "direto") {
@@ -135,7 +199,6 @@ export const exportEmployeeMonthlyReport = async (
       }
 
       // 3. CÁLCULO DO TOTAL DIA BASEADO NOS NOVOS HORÁRIOS EXIBIDOS
-      // Agora: (11:00 - 08:00) = 3h + (16:00 - 12:00) = 4h -> Total 7h!
       const minIn = timeToMinutes(dispIn);
       const minPause = timeToMinutes(dispPause);
       const minResume = timeToMinutes(dispResume);
@@ -157,8 +220,6 @@ export const exportEmployeeMonthlyReport = async (
         dailyMinutes > 0 ? formatMinutesString(dailyMinutes) : "-",
       ];
     });
-
-    // ... (restante do código igual)
 
     // --- LINHA DE TOTALIZAÇÃO ---
     tableBody.push([
@@ -215,8 +276,8 @@ export const exportEmployeeMonthlyReport = async (
       .text(employee.position?.toUpperCase() || "NÃO INFORMADO", 45, 48);
     doc.setFont("helvetica", "bold").text("CPF:", 14, 54);
     doc.setFont("helvetica", "normal").text(formatCPF(employee.cpf), 45, 54);
-    doc.setFont("helvetica", "bold").text("MÊS REFERÊNCIA:", 210, 42);
-    doc.text(monthLabel.toUpperCase(), 258, 42);
+    doc.setFont("helvetica", "bold").text("MÊS REFERÊNCIA:", 205, 42);
+    doc.text(monthLabel.toUpperCase(), 242, 42);
 
     autoTable(doc, {
       startY: 58,

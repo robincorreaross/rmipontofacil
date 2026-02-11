@@ -96,3 +96,54 @@ USING (true);
 
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS shift_type TEXT DEFAULT 'tradicional';
 -- Tipos: 'tradicional', 'direto', 'reduzido'
+
+-- Tabela de Justificativas/Atestados
+CREATE TABLE justifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id UUID REFERENCES employees(id) ON DELETE CASCADE,
+  date DATE NOT NULL,
+  reason TEXT NOT NULL, -- Ex: "Atestado Médico", "Luto", "Problemas Técnicos"
+  is_excused BOOLEAN DEFAULT TRUE, -- Se a falta é abonada ou não
+  document_url TEXT, -- Link para o arquivo no Storage
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES auth.users(id)
+);
+
+-- Habilitar RLS para que apenas o Admin veja/crie
+ALTER TABLE justifications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Admins can do everything with justifications" 
+ON justifications FOR ALL 
+USING ( auth.jwt() ->> 'email' = 'seu-email-admin@teste.com' ); -- Ajustaremos a lógica de Admin depois
+
+-- Remove a política antiga que está causando o erro
+DROP POLICY IF EXISTS "Admins can do everything with justifications" ON justifications;
+
+-- Cria uma nova política permitindo inserção para usuários logados
+CREATE POLICY "Enable insert for authenticated users only" 
+ON justifications 
+FOR INSERT 
+TO authenticated 
+WITH CHECK (true);
+
+-- Permite que usuários logados também visualizem as justificativas
+CREATE POLICY "Enable read access for authenticated users" 
+ON justifications 
+FOR SELECT 
+TO authenticated 
+USING (true);
+
+-- Permite que usuários autenticados ATUALIZEM (Edit) justificativas
+CREATE POLICY "Enable update for authenticated users" 
+ON justifications 
+FOR UPDATE 
+TO authenticated 
+USING (true) 
+WITH CHECK (true);
+
+-- Permite que usuários autenticados EXCLUAM (Delete) justificativas
+CREATE POLICY "Enable delete for authenticated users" 
+ON justifications 
+FOR DELETE 
+TO authenticated 
+USING (true);

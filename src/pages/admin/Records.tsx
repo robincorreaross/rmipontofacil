@@ -22,10 +22,26 @@ import { supabase } from "@/integrations/supabase/client";
 import { getRecordTypeLabel, getRecordTypeColor } from "@/lib/cpf";
 import { exportEmployeeMonthlyReport } from "@/lib/exportPdf";
 import { useAuth } from "@/hooks/useAuth";
-import { Pencil, Trash2, Plus, FileDown } from "lucide-react";
+import {
+  Pencil,
+  Trash2,
+  Plus,
+  FileDown,
+  AlertCircle,
+  FileText,
+  CheckCircle2,
+} from "lucide-react";
 import { toast } from "sonner";
-import { format, startOfMonth, endOfMonth, parseISO } from "date-fns";
+import {
+  format,
+  parseISO,
+  startOfDay,
+  endOfDay,
+  startOfMonth,
+  endOfMonth,
+} from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { JustificationModal } from "@/components/admin/JustificationModal";
 
 interface TimeRecord {
   id: string;
@@ -35,6 +51,10 @@ interface TimeRecord {
   notes: string | null;
   edited: boolean;
   employees: { name: string; cpf: string; position?: string } | null;
+  isJustification?: boolean;
+  reason?: string;
+  is_excused?: boolean;
+  document_url?: string | null;
 }
 
 interface Employee {
@@ -42,7 +62,7 @@ interface Employee {
   name: string;
   cpf: string;
   position?: string;
-  shift_type?: "tradicional" | "direto" | "reduzido" | null; // Adicione esta linha
+  shift_type?: "tradicional" | "direto" | "reduzido" | null;
 }
 
 const Records = () => {
@@ -50,20 +70,24 @@ const Records = () => {
   const [records, setRecords] = useState<TimeRecord[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Data inicial: hoje
   const [filterDate, setFilterDate] = useState(
     format(new Date(), "yyyy-MM-dd"),
   );
   const [filterEmployee, setFilterEmployee] = useState<string>("all");
 
-  // Estados para os Diálogos
   const [editDialog, setEditDialog] = useState(false);
   const [addDialog, setAddDialog] = useState(false);
   const [exportDialog, setExportDialog] = useState(false);
+  const [justificationDialogOpen, setJustificationDialogOpen] = useState(false);
   const [exportTarget, setExportTarget] = useState<"selected" | "all">(
     "selected",
   );
 
   const [editingRecord, setEditingRecord] = useState<TimeRecord | null>(null);
+  const [editingJustification, setEditingJustification] = useState<any>(null);
+
   const [formType, setFormType] = useState("entrada");
   const [formDate, setFormDate] = useState("");
   const [formTime, setFormTime] = useState("");
@@ -75,7 +99,7 @@ const Records = () => {
   const fetchEmployees = useCallback(async () => {
     const { data } = await supabase
       .from("employees")
-      .select("*") // Alterado de campos específicos para '*' para garantir que pegue o turno
+      .select("*")
       .eq("active", true)
       .order("name");
     setEmployees(data || []);
@@ -84,33 +108,59 @@ const Records = () => {
   const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
-      const dateRef = parseISO(filterDate);
-      let startRange: string;
-      let endRange: string;
+      // CORREÇÃO CRÍTICA DE DATA E FUSO HORÁRIO
+      // Parse da data selecionada no input (string YYYY-MM-DD) para Objeto Date Local
+      const localDateObj = parseISO(filterDate);
 
-      if (filterEmployee !== "all") {
-        startRange = format(startOfMonth(dateRef), "yyyy-MM-dd'T'00:00:00");
-        endRange = format(endOfMonth(dateRef), "yyyy-MM-dd'T'23:59:59");
-      } else {
-        startRange = `${filterDate}T00:00:00`;
-        endRange = `${filterDate}T23:59:59`;
-      }
+      // Definimos o início e fim do dia no horário local, e convertemos para UTC ISO String
+      // Isso garante que pegamos das 00:00:00 até 23:59:59 do dia selecionado
+      const queryStart = startOfDay(localDateObj).toISOString();
+      const queryEnd = endOfDay(localDateObj).toISOString();
 
-      const { data, error } = await supabase
+      // REMOVIDA A LÓGICA DE "startOfMonth" QUE TRAZIA O MÊS INTEIRO INDEVIDAMENTE
+      // Agora o filtro sempre respeitará o dia selecionado no calendário,
+      // independente se tem funcionário selecionado ou não.
+
+      // 1. Buscar Registros de Ponto
+      const { data: recordsData, error: recordsError } = await supabase
         .from("time_records")
         .select("*, employees(name, cpf, position)")
-        .gte("recorded_at", startRange)
-        .lte("recorded_at", endRange)
+        .gte("recorded_at", queryStart)
+        .lte("recorded_at", queryEnd)
         .order("recorded_at", { ascending: true });
 
-      if (error) throw error;
+      if (recordsError) throw recordsError;
 
-      let filtered = data || [];
+      // 2. Buscar Justificativas
+      // Para justificativas (que usam campo date), comparamos a string YYYY-MM-DD
+      const { data: justificationsData } = await (supabase as any)
+        .from("justifications")
+        .select("*, employees(name)")
+        .eq("date", filterDate); // Busca exata pela data selecionada
+
+      // Mapear justificativas
+      const markedJustifications = (justificationsData || []).map((j: any) => ({
+        ...j,
+        isJustification: true,
+        record_type: "justificativa",
+        // Truque para ordenar no meio do dia visualmente se não tiver hora
+        recorded_at: `${j.date}T12:00:00`,
+      }));
+
+      // 3. Unir e Filtrar por funcionário
+      let combined = [...(recordsData || []), ...markedJustifications];
+
       if (filterEmployee !== "all") {
-        filtered = filtered.filter((r) => r.employee_id === filterEmployee);
+        combined = combined.filter((r) => r.employee_id === filterEmployee);
       }
 
-      setRecords(filtered);
+      // Ordenar cronologicamente
+      combined.sort(
+        (a, b) =>
+          new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime(),
+      );
+
+      setRecords(combined);
     } catch (err) {
       toast.error("Erro ao carregar registros.");
       console.error(err);
@@ -127,13 +177,52 @@ const Records = () => {
     fetchRecords();
   }, [fetchRecords]);
 
-  // NOVA FUNÇÃO DE EXPORTAÇÃO COMPLETA
+  // Função para abrir o modal de JUSTIFICATIVA em modo EDIÇÃO
+  const handleEditJustification = (justification: any) => {
+    setEditingJustification(justification);
+    setJustificationDialogOpen(true);
+  };
+
+  // Função para abrir o modal de JUSTIFICATIVA em modo ADIÇÃO (limpo)
+  const handleOpenJustificationModal = () => {
+    setEditingJustification(null);
+    setJustificationDialogOpen(true);
+  };
+
+  const handleGeneralDelete = async (item: TimeRecord) => {
+    const isJustification = item.isJustification;
+    if (
+      !confirm(
+        `Tem certeza que deseja excluir esta ${isJustification ? "justificativa" : "batida"}?`,
+      )
+    )
+      return;
+
+    try {
+      const table = isJustification ? "justifications" : "time_records";
+      const { error } = await (supabase as any)
+        .from(table)
+        .delete()
+        .eq("id", item.id);
+
+      if (error) throw error;
+      toast.success(
+        `${isJustification ? "Justificativa" : "Registro"} excluído.`,
+      );
+      fetchRecords();
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro ao excluir. Verifique suas permissões.");
+    }
+  };
+
   const handleExportFlow = async () => {
     setSaving(true);
     try {
       let employeesToExport: Employee[] = [];
       let recordsToExport: TimeRecord[] = [];
 
+      // Para exportação, mantemos a lógica mensal, pois a folha é mensal
       const dateRef = parseISO(filterDate);
       const startRange = format(startOfMonth(dateRef), "yyyy-MM-dd'T'00:00:00");
       const endRange = format(endOfMonth(dateRef), "yyyy-MM-dd'T'23:59:59");
@@ -146,7 +235,16 @@ const Records = () => {
           return;
         }
         employeesToExport = [emp];
-        recordsToExport = records;
+
+        // Busca registros do mês inteiro para o PDF
+        const { data } = await supabase
+          .from("time_records")
+          .select("*, employees(name, cpf, position)")
+          .eq("employee_id", filterEmployee)
+          .gte("recorded_at", startRange)
+          .lte("recorded_at", endRange);
+
+        recordsToExport = data || [];
       } else {
         employeesToExport = employees;
         const { data } = await supabase
@@ -157,12 +255,6 @@ const Records = () => {
         recordsToExport = data || [];
       }
 
-      if (recordsToExport.length === 0) {
-        toast.error("Nenhum registro encontrado para este mês.");
-        setSaving(false);
-        return;
-      }
-
       await exportEmployeeMonthlyReport(
         employeesToExport,
         recordsToExport,
@@ -171,7 +263,6 @@ const Records = () => {
       setExportDialog(false);
       toast.success("PDF gerado com sucesso!");
     } catch (error) {
-      console.error(error);
       toast.error("Erro ao gerar PDF.");
     } finally {
       setSaving(false);
@@ -264,21 +355,6 @@ const Records = () => {
     }
   };
 
-  const handleDelete = async (record: TimeRecord) => {
-    if (!confirm("Tem certeza que deseja excluir este registro?")) return;
-    try {
-      const { error } = await supabase
-        .from("time_records")
-        .delete()
-        .eq("id", record.id);
-      if (error) throw error;
-      toast.success("Registro excluído.");
-      fetchRecords();
-    } catch (err) {
-      toast.error("Erro ao excluir registro.");
-    }
-  };
-
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -288,13 +364,20 @@ const Records = () => {
               Registros de Ponto
             </h1>
             <p className="text-muted-foreground text-sm">
-              {filterEmployee !== "all"
-                ? "Registros Mensais"
-                : "Registros Diários"}
-              : {records.length} encontrados
+              Visualizando registros do dia:{" "}
+              {format(parseISO(filterDate), "dd/MM/yyyy")}
+              {records.length > 0 && ` (${records.length} encontrados)`}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={handleOpenJustificationModal}
+              className="border-orange-500 text-orange-600 hover:bg-orange-50"
+            >
+              <AlertCircle className="w-4 h-4 mr-2" /> Justificar Falta
+            </Button>
+
             <Button
               variant="outline"
               onClick={() => setExportDialog(true)}
@@ -337,35 +420,93 @@ const Records = () => {
           <div className="text-center py-12">Carregando...</div>
         ) : (
           <div className="grid gap-2">
+            {records.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground bg-muted/30 rounded-lg border border-dashed">
+                Nenhum registro encontrado para esta data.
+              </div>
+            )}
             {records.map((record) => (
-              <Card key={record.id} className="glass-card">
+              <Card
+                key={record.id}
+                className={`glass-card ${record.isJustification ? "border-l-4 border-l-orange-500" : ""}`}
+              >
                 <CardContent className="p-4 flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">
-                        {record.employees?.name}
-                      </span>
-                      <Badge className={getRecordTypeColor(record.record_type)}>
-                        {getRecordTypeLabel(record.record_type)}
-                      </Badge>
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      {format(new Date(record.recorded_at), "HH:mm:ss")}{" "}
-                      {record.notes && `• ${record.notes}`}
+                  <div className="flex gap-3 items-start">
+                    {record.isJustification && (
+                      <AlertCircle className="w-5 h-5 text-orange-500 mt-0.5" />
+                    )}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold">
+                          {record.employees?.name}
+                        </span>
+                        {record.isJustification ? (
+                          <Badge
+                            variant="outline"
+                            className="bg-orange-50 text-orange-700 border-orange-200"
+                          >
+                            JUSTIFICATIVA / ABONO
+                          </Badge>
+                        ) : (
+                          <Badge
+                            className={getRecordTypeColor(record.record_type)}
+                          >
+                            {getRecordTypeLabel(record.record_type)}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <div className="text-sm text-muted-foreground mt-1">
+                        {record.isJustification ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="text-foreground font-medium">
+                              {record.reason}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {record.is_excused && (
+                                <span className="flex items-center text-green-600 text-xs font-bold">
+                                  <CheckCircle2 className="w-3 h-3 mr-1" />{" "}
+                                  ABONADO
+                                </span>
+                              )}
+                              {record.document_url && (
+                                <a
+                                  href={record.document_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="flex items-center text-blue-600 hover:underline text-xs"
+                                >
+                                  <FileText className="w-3 h-3 mr-1" /> Ver
+                                  Anexo
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {format(new Date(record.recorded_at), "HH:mm:ss")}
+                            {record.notes && ` • ${record.notes}`}
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="flex gap-1">
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => openEditDialog(record)}
+                      onClick={() =>
+                        record.isJustification
+                          ? handleEditJustification(record)
+                          : openEditDialog(record)
+                      }
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => handleDelete(record)}
+                      onClick={() => handleGeneralDelete(record)}
                       className="text-destructive"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -377,20 +518,28 @@ const Records = () => {
           </div>
         )}
 
-        {/* DIÁLOGO EXPORTAR */}
+        <JustificationModal
+          open={justificationDialogOpen}
+          onOpenChange={(isOpen) => {
+            setJustificationDialogOpen(isOpen);
+            if (!isOpen) setEditingJustification(null); // Limpa os dados ao fechar
+          }}
+          employees={employees}
+          onSuccess={() => fetchRecords()}
+          initialData={editingJustification}
+        />
+
+        {/* ... DIALOGOS RESTANTES ... */}
         <Dialog open={exportDialog} onOpenChange={setExportDialog}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Exportar Relatórios</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 mt-4">
-              <Label>
-                Mês de Referência (com base na data selecionada no filtro)
-              </Label>
+              <Label>Mês de Referência</Label>
               <div className="p-3 bg-muted rounded-md font-mono text-center uppercase">
                 {format(parseISO(filterDate), "MMMM / yyyy", { locale: ptBR })}
               </div>
-              <Label>Funcionários</Label>
               <Select
                 value={exportTarget}
                 onValueChange={(v: any) => setExportTarget(v)}
@@ -418,7 +567,6 @@ const Records = () => {
           </DialogContent>
         </Dialog>
 
-        {/* DIÁLOGOS ADICIONAR E EDITAR (IGUAIS AOS ANTERIORES) */}
         <Dialog open={addDialog} onOpenChange={setAddDialog}>
           <DialogContent>
             <DialogHeader>
@@ -438,7 +586,6 @@ const Records = () => {
                   ))}
                 </SelectContent>
               </Select>
-              {/* ... Campos restantes do formulário de adição ... */}
               <Label>Tipo</Label>
               <Select value={formType} onValueChange={setFormType}>
                 <SelectTrigger>
@@ -494,7 +641,6 @@ const Records = () => {
               <DialogTitle>Editar Registro</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 mt-4">
-              {/* ... Campos de edição (Tipo, Data, Hora, Obs) ... */}
               <Label>Tipo</Label>
               <Select value={formType} onValueChange={setFormType}>
                 <SelectTrigger>
