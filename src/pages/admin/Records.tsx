@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -84,6 +85,7 @@ const Records = () => {
   const [exportTarget, setExportTarget] = useState<"selected" | "all">(
     "selected",
   );
+  const [useCompensation, setUseCompensation] = useState(true);
 
   const [editingRecord, setEditingRecord] = useState<TimeRecord | null>(null);
   const [editingJustification, setEditingJustification] = useState<any>(null);
@@ -259,6 +261,7 @@ const Records = () => {
         employeesToExport,
         recordsToExport,
         filterDate,
+        useCompensation,
       );
       setExportDialog(false);
       toast.success("PDF gerado com sucesso!");
@@ -556,6 +559,27 @@ const Records = () => {
                   </SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* CHECKBOX DE COMPENSAÇÃO */}
+              <div className="flex items-center space-x-2 py-2 border p-3 rounded-md bg-slate-50">
+                <Checkbox
+                  id="comp"
+                  checked={useCompensation}
+                  onCheckedChange={(checked) => setUseCompensation(!!checked)}
+                />
+                <div className="grid gap-1.5 leading-none">
+                  <Label
+                    htmlFor="comp"
+                    className="text-sm font-medium leading-none cursor-pointer"
+                  >
+                    Aplicar compensação de horário
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Ajusta saída e intervalo para turnos reduzidos.
+                  </p>
+                </div>
+              </div>
+
               <Button
                 onClick={handleExportFlow}
                 disabled={saving}

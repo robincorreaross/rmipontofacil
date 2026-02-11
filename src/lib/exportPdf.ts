@@ -54,18 +54,18 @@ const formatMinutesString = (totalMinutes: number): string => {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 };
 
+// ADICIONADO: Parâmetro 'useCompensation' (default false se não passar)
 export const exportEmployeeMonthlyReport = async (
   employees: Employee[],
   allRecords: TimeRecord[],
   dateFilter: string,
+  useCompensation: boolean,
 ) => {
-  // 1. Buscar configurações da empresa
   const { data: company } = await (supabase as any)
     .from("company_settings")
     .select("*")
     .single();
 
-  // 2. Buscar Justificativas para o mês selecionado
   const selectedDate = parseISO(dateFilter);
   const startRange = format(startOfMonth(selectedDate), "yyyy-MM-dd");
   const endRange = format(endOfMonth(selectedDate), "yyyy-MM-dd");
@@ -82,19 +82,16 @@ export const exportEmployeeMonthlyReport = async (
   employees.forEach((employee, index) => {
     if (index > 0) doc.addPage();
 
-    // Filtra registros deste funcionário
     const employeeRecords = allRecords.filter(
       (r) => r.employee_id === employee.id,
     );
 
-    // Filtra justificativas deste funcionário
     const employeeJustifications = (justifications || []).filter(
       (j: any) => j.employee_id === employee.id,
     );
 
     const groupedRecords: Record<string, DayGroup> = {};
 
-    // A. Preenche com os dias que têm batidas
     employeeRecords.forEach((rec) => {
       const dateKey = format(new Date(rec.recorded_at), "yyyy-MM-dd");
       if (!groupedRecords[dateKey]) {
@@ -114,7 +111,6 @@ export const exportEmployeeMonthlyReport = async (
       if (rec.record_type === "saida") groupedRecords[dateKey].out = time;
     });
 
-    // B. Preenche com os dias que têm justificativa (se não houver batida naquele dia)
     employeeJustifications.forEach((just: any) => {
       if (!groupedRecords[just.date]) {
         groupedRecords[just.date] = {
@@ -129,26 +125,20 @@ export const exportEmployeeMonthlyReport = async (
 
     let totalMonthMinutes = 0;
 
-    // Ordena os dias cronologicamente para o PDF
     const sortedDays = Object.values(groupedRecords).sort((a, b) =>
       a.date.localeCompare(b.date),
     );
 
     const tableBody: RowInput[] = sortedDays.map((day) => {
-      // Verifica se há justificativa para este dia
       const justification = employeeJustifications.find(
         (j: any) => j.date === day.date,
       );
 
-      // --- BLOCO NOVO: Exibição da Justificativa ---
-      // Se tem justificativa e o campo de Entrada está vazio (Falta integral)
       if (justification && day.in === "-") {
         const status = justification.is_excused ? "ABONADA" : "NÃO ABONADA";
-        // Verde (RGB) se abonada, Vermelho se não
-        // Adicionamos a tipagem explícita : [number, number, number]
         const textColor: [number, number, number] = justification.is_excused
-          ? [22, 163, 74] // Verde
-          : [220, 38, 38]; // Vermelho
+          ? [22, 163, 74]
+          : [220, 38, 38];
 
         return [
           format(parseISO(day.date), "dd/MM/yyyy"),
@@ -165,32 +155,29 @@ export const exportEmployeeMonthlyReport = async (
           "-",
         ];
       }
-      // ---------------------------------------------
 
-      // 1. DADOS ORIGINAIS EM MINUTOS
       const tIn = timeToMinutes(day.in);
       const tPause = timeToMinutes(day.pause);
       const tResume = timeToMinutes(day.resume);
       const tOut = timeToMinutes(day.out);
 
-      // 2. VARIÁVEIS DE EXIBIÇÃO
       let dispIn = day.in;
       let dispPause = day.pause;
       let dispResume = day.resume;
       let dispOut = day.out;
 
-      if (employee.shift_type === "reduzido" && tPause > 0 && tResume > 0) {
+      // LÓGICA CONDICIONAL DA MÁSCARA
+      if (
+        useCompensation &&
+        employee.shift_type === "reduzido" &&
+        tPause > 0 &&
+        tResume > 0
+      ) {
         const intervaloReal = tResume - tPause;
 
         if (intervaloReal < 60) {
-          // Diferença que ela trabalhou em vez de descansar (ex: 40 min)
           const gap = 60 - intervaloReal;
-
-          // REGRA: Retorno no PDF é SEMPRE Pausa + 60 min (Fica 12:00 no seu exemplo)
           dispResume = minutesToTime(tPause + 60);
-
-          // REGRA: A Saída no PDF é a Saída REAL + o intervalo que ela tirou + o GAP
-          // Mantendo sua lógica original exata:
           dispOut = minutesToTime(tOut + intervaloReal + gap);
         }
       } else if (employee.shift_type === "direto") {
@@ -198,7 +185,6 @@ export const exportEmployeeMonthlyReport = async (
         dispResume = "N/A";
       }
 
-      // 3. CÁLCULO DO TOTAL DIA BASEADO NOS NOVOS HORÁRIOS EXIBIDOS
       const minIn = timeToMinutes(dispIn);
       const minPause = timeToMinutes(dispPause);
       const minResume = timeToMinutes(dispResume);
@@ -221,7 +207,6 @@ export const exportEmployeeMonthlyReport = async (
       ];
     });
 
-    // --- LINHA DE TOTALIZAÇÃO ---
     tableBody.push([
       {
         content: "TOTAL TRABALHADO NO MÊS",
@@ -242,7 +227,6 @@ export const exportEmployeeMonthlyReport = async (
       },
     ]);
 
-    // --- RENDERIZAÇÃO DO PDF ---
     doc.setFontSize(18).setFont("helvetica", "bold");
     doc.text(company?.nome_fantasia?.toUpperCase() || "PONTO FÁCIL", 148, 12, {
       align: "center",
@@ -276,6 +260,7 @@ export const exportEmployeeMonthlyReport = async (
       .text(employee.position?.toUpperCase() || "NÃO INFORMADO", 45, 48);
     doc.setFont("helvetica", "bold").text("CPF:", 14, 54);
     doc.setFont("helvetica", "normal").text(formatCPF(employee.cpf), 45, 54);
+
     doc.setFont("helvetica", "bold").text("MÊS REFERÊNCIA:", 205, 42);
     doc.text(monthLabel.toUpperCase(), 242, 42);
 
